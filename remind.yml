@@ -1,0 +1,165 @@
+# Напоминания «Планера Лизика» в Telegram — о делах и о сроках сдачи, даже когда планер закрыт.
+# Нужны 3 секрета в Settings → Secrets and variables → Actions:
+#   PLANER_TOKEN        — тот же токен, что вводится в планере (доступ к planer-data)
+#   TELEGRAM_BOT_TOKEN  — токен бота от @BotFather
+#   TELEGRAM_CHAT_ID    — ваш id в Telegram (узнать у @userinfobot)
+# Если хранилище называется не planer-lizika-data, создайте переменную DATA_REPO = логин/название.
+# Утренняя сводка (план на день и сроки) приходит в 8:00 и закрепляется в чате. Другое время: переменная DIGEST_TIME = 07:30, выключить: off.
+# Журнал запусков в публичном репозитории виден всем, поэтому названия дел в него не пишутся.
+
+name: Напоминания в Telegram
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      test:
+        description: "Отправить тестовое сообщение"
+        type: boolean
+        default: true
+
+permissions: {}
+
+concurrency:
+  group: remind-lizik
+  cancel-in-progress: false
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      TZ: Europe/Moscow
+      DATA_REPO: ${{ vars.DATA_REPO || format('{0}/planer-lizika-data', github.repository_owner) }}
+      DATA_TOKEN: ${{ secrets.PLANER_TOKEN }}
+      TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+      TEST: ${{ github.event_name == 'workflow_dispatch' && inputs.test }}
+      DIGEST_TIME: ${{ vars.DIGEST_TIME || '08:00' }}
+    steps:
+      - name: Отправить напоминания
+        shell: bash
+        run: |
+          node --input-type=module <<'EOF'
+          const {DATA_REPO,DATA_TOKEN,TG_TOKEN,TG_CHAT,TEST}=process.env;
+          if(!DATA_TOKEN||!TG_TOKEN||!TG_CHAT){console.log("Не заданы секреты PLANER_TOKEN, TELEGRAM_BOT_TOKEN или TELEGRAM_CHAT_ID");process.exit(1)}
+          const H={Authorization:"Bearer "+DATA_TOKEN,Accept:"application/vnd.github+json","User-Agent":"planer-lizika-remind"};
+          const api=p=>`https://api.github.com/repos/${DATA_REPO}/contents/${p}`;
+          async function get(p){
+            const r=await fetch(api(p),{headers:H});
+            if(r.status===404)return {data:null,sha:null};
+            if(!r.ok){console.log(`Хранилище ответило ${r.status}: проверьте PLANER_TOKEN и название репозитория`);process.exit(1)}
+            const j=await r.json();let txt=Buffer.from(j.content||"","base64").toString("utf8");
+            if(!txt&&j.size>0){const r2=await fetch(api(p),{headers:{...H,Accept:"application/vnd.github.raw+json"}});txt=await r2.text()}
+            return {data:txt?JSON.parse(txt):null,sha:j.sha};
+          }
+          async function tg(text){
+            const r=await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:TG_CHAT,text,disable_web_page_preview:true})});
+            if(!r.ok)console.log("Telegram ответил",r.status,"— проверьте токен бота, id и что вы нажали Start у бота");
+            return r.ok;
+          }
+          const CAT={anc:"Найдём предков",edit:"Редактура",study:"Учёба",personal:"Личное",health:"Здоровье"};
+          const MON=["января","февраля","марта","апреля","мая","июня","июля","августа","сентября","октября","ноября","декабря"];
+          const pad=n=>String(n).padStart(2,"0");
+          const iso=d=>d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate());
+
+          if(TEST==="true"){await tg("Планер Лизика: напоминания в Telegram подключены. Сюда будут приходить дела и сроки сдачи.");}
+
+          const {data}=await get("data.json");
+          const items=Array.isArray(data)?data:((data&&data.items)||[]);
+          const state=await get("notified.json");const sent=state.data||{};
+          const now=Date.now(),today=iso(new Date());
+          const due=[];
+          const fromIso=s=>{const[y,m,d]=s.split("-").map(Number);return new Date(y,m-1,d)};
+          const dim=(y,m)=>new Date(y,m+1,0).getDate();
+          function occurs(t,d){
+            const rp=t.repeat;if(!rp||!rp.freq)return t.date===d;
+            if(d<t.date||(rp.until&&d>rp.until)||(t.skipDates||[]).includes(d))return false;
+            const s=fromIso(t.date),x=fromIso(d),dw=x.getDay();
+            if(rp.freq==="daily")return true;
+            if(rp.freq==="weekdays")return dw>=1&&dw<=5;
+            if(rp.freq==="weekly"||rp.freq==="biweekly"){
+              const days=rp.days&&rp.days.length?rp.days:[s.getDay()];if(!days.includes(dw))return false;
+              if(rp.freq==="weekly")return true;
+              const mon=z=>{const q=new Date(z);q.setDate(q.getDate()-((q.getDay()+6)%7));return q};
+              return Math.round((mon(x)-mon(s))/6048e5)%2===0;
+            }
+            if(rp.freq==="monthly")return x.getDate()===Math.min(s.getDate(),dim(x.getFullYear(),x.getMonth()));
+            if(rp.freq==="yearly")return x.getMonth()===s.getMonth()&&x.getDate()===Math.min(s.getDate(),dim(x.getFullYear(),x.getMonth()));
+            return false;
+          }
+          const dates=[-1,0,1].map(o=>{const q=new Date();q.setDate(q.getDate()+o);return iso(q)});
+          for(const t of items){
+            if(!t||t.deleted||(t.kind&&t.kind!=="task")||!t.date)continue;
+            const rem=typeof t.remind==="number"?t.remind:(t.time?15:-1);if(rem<0)continue;
+            const series=!!(t.repeat&&t.repeat.freq);
+            for(const day of dates){
+              if(!occurs(t,day))continue;
+              if(series?(t.doneDates||[]).includes(day):t.done)continue;
+              const [y,m,d]=day.split("-").map(Number),[h,mi]=(t.time||"09:00").split(":").map(Number);
+              const at=new Date(y,m-1,d,h,mi).getTime()-rem*60000,key=t.id+"@"+at;
+              if(at<=now&&at>now-6*3600e3&&!sent[key])due.push({t:{...t,date:day},at,key});
+            }
+          }
+          // сроки сдачи: due (YYYY-MM-DD), dueTime, dueRem (минуты до срока; -1 = нет; по умолчанию 1440)
+          for(const t of items){
+            if(!t||t.deleted||(t.kind&&t.kind!=="task")||!t.due||t.done||(t.repeat&&t.repeat.freq))continue;
+            const r=typeof t.dueRem==="number"?t.dueRem:1440;if(r<0)continue;
+            const [y,m,d]=t.due.split("-").map(Number),[h,mi]=(t.dueTime||"09:00").split(":").map(Number);
+            const at=new Date(y,m-1,d,h,mi).getTime()-r*60000,key=t.id+"@due@"+at;
+            if(at<=now&&(at>now-6*3600e3||now<at+r*60000)&&!sent[key])due.push({t,at,key,dl:true});
+          }
+          due.sort((a,b)=>a.at-b.at);
+          let changed=false,ok=0;
+          const tomorrow=dates[2];
+          const human=d=>Number(d.slice(8))+" "+MON[Number(d.slice(5,7))-1];
+          for(const {t,key,dl} of due){
+            if(dl){
+              const w=(t.due===today?"сегодня":t.due===tomorrow?"завтра":human(t.due))+(t.dueTime?" в "+t.dueTime:"");
+              const text=["🚩 Срок сдачи: "+t.title,"Срок "+w+" · "+(CAT[t.cat]||"Личное"),t.note||""].filter(Boolean).join("\n");
+              if(await tg(text)){sent[key]=now;changed=true;ok++}
+              continue;
+            }
+            const when=t.date===today?(t.time?"Сегодня в "+t.time:"Сегодня"):(Number(t.date.slice(8))+" "+MON[Number(t.date.slice(5,7))-1]+(t.time?" в "+t.time:""));
+            const text=["⏰ "+t.title,when+" · "+(CAT[t.cat]||"Личное"),t.note||""].filter(Boolean).join("\n");
+            if(await tg(text)){sent[key]=now;changed=true;ok++}
+          }
+          // утренняя сводка: раз в день после DIGEST_TIME, закрепляется в чате (видна в виджете Telegram)
+          const DIG=String(process.env.DIGEST_TIME||"08:00").trim();
+          if(/^\d{1,2}:\d{2}$/.test(DIG)){
+            const nd=new Date(),[dh,dm]=DIG.split(":").map(Number),mins=nd.getHours()*60+nd.getMinutes(),dk="digest@"+today;
+            const inWindow=mins>=dh*60+dm&&mins<dh*60+dm+180;
+            if(TEST==="true"||(!sent[dk]&&inWindow)){
+              const DOWN=["воскресенье","понедельник","вторник","среда","четверг","пятница","суббота"];
+              const hd=s=>Number(s.slice(8))+" "+MON[Number(s.slice(5,7))-1];
+              const q=new Date();q.setDate(q.getDate()+3);const lim3=iso(q);
+              const isTask=t=>t&&!t.deleted&&(!t.kind||t.kind==="task");
+              const list=items.filter(t=>isTask(t)&&t.date&&occurs(t,today)&&!((t.repeat&&t.repeat.freq)?(t.doneDates||[]).includes(today):t.done))
+                .sort((a,b)=>(a.time||"99").localeCompare(b.time||"99"));
+              const dls=items.filter(t=>isTask(t)&&t.due&&!t.done&&!(t.repeat&&t.repeat.freq)&&t.due<=lim3)
+                .sort((a,b)=>(a.due+(a.dueTime||"99")).localeCompare(b.due+(b.dueTime||"99")));
+              const L=["☀️ План на "+hd(today)+", "+DOWN[nd.getDay()]];
+              if(list.length)for(const t of list)L.push("• "+(t.time?t.time+" ":"")+t.title+" · "+(CAT[t.cat]||"Личное"));
+              else L.push("Дел на сегодня нет.");
+              if(dls.length){L.push("","🚩 Сроки:");for(const t of dls)L.push("• "+(t.due<today?"просрочено: ":t.due===today?"сегодня: ":hd(t.due)+": ")+t.title+(t.dueTime?" (до "+t.dueTime+")":""))}
+              const api2=m=>`https://api.telegram.org/bot${TG_TOKEN}/${m}`;
+              const post=(m,b)=>fetch(api2(m),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:TG_CHAT,...b})});
+              const r=await post("sendMessage",{text:L.join("\n"),disable_web_page_preview:true});
+              if(r.ok){
+                const j=await r.json();
+                if(TEST!=="true"){sent[dk]=now;changed=true}
+                try{await post("unpinAllChatMessages",{});if(j.result&&j.result.message_id)await post("pinChatMessage",{message_id:j.result.message_id,disable_notification:true})}catch(e){}
+              }
+              console.log("Утренняя сводка:",r.ok?"отправлена":"не отправилась ("+r.status+")");
+            }
+          }
+          for(const k of Object.keys(sent))if(sent[k]<now-14*864e5){delete sent[k];changed=true}
+          if(changed){
+            const body={message:"Напоминания: отметка отправленных",content:Buffer.from(JSON.stringify(sent)).toString("base64")};
+            if(state.sha)body.sha=state.sha;
+            const r=await fetch(api("notified.json"),{method:"PUT",headers:{...H,"Content-Type":"application/json"},body:JSON.stringify(body)});
+            if(!r.ok)console.log("Не удалось записать отметку отправленных:",r.status);
+          }
+          console.log(`Отправлено напоминаний: ${ok} из ${due.length}`);
+          EOF
