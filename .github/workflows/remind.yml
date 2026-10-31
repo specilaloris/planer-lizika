@@ -5,6 +5,7 @@
 #   TELEGRAM_CHAT_ID    — ваш id в Telegram (узнать у @userinfobot)
 # Если хранилище называется не planer-lizika-data, создайте переменную DATA_REPO = логин/название.
 # Утренняя сводка (план на день и сроки) приходит в 8:00 и закрепляется в чате. Другое время: переменная DIGEST_TIME = 07:30, выключить: off.
+# Сразу за сводкой приходят новости. Выключить: переменная NEWS = off.
 # Журнал запусков в публичном репозитории виден всем, поэтому названия дел в него не пишутся.
 
 name: Напоминания в Telegram
@@ -37,6 +38,7 @@ jobs:
       TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
       TEST: ${{ github.event_name == 'workflow_dispatch' && inputs.test }}
       DIGEST_TIME: ${{ vars.DIGEST_TIME || '08:00' }}
+      NEWS: ${{ vars.NEWS || '' }}
     steps:
       - name: Отправить напоминания
         shell: bash
@@ -125,6 +127,61 @@ jobs:
             const text=["⏰ "+t.title,when+" · "+(CAT[t.cat]||"Личное"),t.note||""].filter(Boolean).join("\n");
             if(await tg(text)){sent[key]=now;changed=true;ok++}
           }
+          // новости к утренней сводке: RSS-ленты; основные источники по очереди, запасные (fb) только если не хватило
+          // переменная NEWS = off выключает новости; названия новостей в журнал не пишутся
+          const NEWS=[
+            {title:"🌿 Хорошие новости",n:4,feeds:[
+              {name:"Google Новости",google:true,url:"https://news.google.com/rss/search?q="+encodeURIComponent("\"добрые новости\" OR \"хорошие новости\" when:2d")+"&hl=ru&gl=RU&ceid=RU:ru"},
+              {name:"Google Новости",google:true,url:"https://news.google.com/rss/search?q="+encodeURIComponent("волонтеры спасли OR впервые открыли OR вылечили when:1d")+"&hl=ru&gl=RU&ceid=RU:ru"},
+              {name:"Good News Network",fb:true,url:"https://www.goodnewsnetwork.org/feed/"},
+              {name:"Positive News",fb:true,url:"https://www.positive.news/feed/"}]},
+            {title:"👗 Мода",n:5,feeds:[
+              {name:"Grazia",google:true,url:"https://news.google.com/rss/search?q="+encodeURIComponent("site:graziamagazine.ru when:3d")+"&hl=ru&gl=RU&ceid=RU:ru"},
+              {name:"ELLE",google:true,url:"https://news.google.com/rss/search?q="+encodeURIComponent("site:elle.ru when:2d")+"&hl=ru&gl=RU&ceid=RU:ru"},
+              {name:"The Symbol",google:true,url:"https://news.google.com/rss/search?q="+encodeURIComponent("site:thesymbol.ru when:2d")+"&hl=ru&gl=RU&ceid=RU:ru"},
+              {name:"Buro 24/7",google:true,url:"https://news.google.com/rss/search?q="+encodeURIComponent("site:buro247.ru when:2d")+"&hl=ru&gl=RU&ceid=RU:ru"},
+              {name:"Google Новости",google:true,fb:true,url:"https://news.google.com/rss/search?q="+encodeURIComponent("мода тренды when:1d")+"&hl=ru&gl=RU&ceid=RU:ru"},
+              {name:"Grazia UK",google:true,fb:true,url:"https://news.google.com/rss/search?q="+encodeURIComponent("site:graziadaily.co.uk when:2d")+"&hl=en-GB&gl=GB&ceid=GB:en-GB"}]}];
+          async function sendNews(){
+            if(String(process.env.NEWS||"").trim().toLowerCase()==="off")return;
+            const ent={quot:'"',apos:"'",lt:"<",gt:">",nbsp:" ",laquo:"«",raquo:"»",mdash:"—",ndash:"–",hellip:"…",rsquo:"’",lsquo:"‘",ldquo:"“",rdquo:"”",amp:"&"};
+            const dec=s=>String(s||"").replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g,"$1").replace(/<[^>]+>/g," ")
+              .replace(/&#(\d+);/g,(m,n)=>String.fromCodePoint(+n)).replace(/&#x([0-9a-f]+);/gi,(m,n)=>String.fromCodePoint(parseInt(n,16)))
+              .replace(/&([a-z]+);/gi,(m,n)=>ent[n.toLowerCase()]??m).replace(/\s+/g," ").trim();
+            const tag=(x,n)=>{const m=x.match(new RegExp("<"+n+"(?:\\s[^>]*)?>([\\s\\S]*?)</"+n+">","i"));return m?m[1]:""};
+            async function feed(f){
+              try{
+                const ac=new AbortController(),tm=setTimeout(()=>ac.abort(),12000);
+                const r=await fetch(f.url,{signal:ac.signal,headers:{"User-Agent":"Mozilla/5.0 (compatible; planer-digest)","Accept":"application/rss+xml, application/atom+xml, application/xml, text/xml"}});
+                clearTimeout(tm);if(!r.ok)return [];
+                const xml=await r.text();
+                const blocks=xml.match(/<item[\s>][\s\S]*?<\/item>/gi)||xml.match(/<entry[\s>][\s\S]*?<\/entry>/gi)||[];
+                return blocks.map(b=>{
+                  let title=dec(tag(b,"title")),link=dec(tag(b,"link")),src=f.name;
+                  if(!/^https?:/.test(link)){const m=b.match(/<link[^>]*href="([^"]+)"/i);link=m?m[1].replace(/&amp;/g,"&"):""}
+                  if(f.google){const m=title.match(/^(.*\S)\s+[-–—]\s+([^-–—]{2,60})$/);if(m){title=m[1];src=m[2].trim()}}
+                  const ds=dec(tag(b,"pubDate")||tag(b,"published")||tag(b,"updated")||tag(b,"dc:date"));
+                  return {title:title.length>160?title.slice(0,157)+"…":title,link,src,t:ds?(Date.parse(ds)||0):0};
+                }).filter(x=>x.title&&/^https?:/.test(x.link)).sort((a,b)=>b.t-a.t);
+              }catch(e){return []}
+            }
+            const esc=s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+            const fresh=Date.now()-36*3600e3,parts=[];
+            for(const sec of NEWS){
+              const res=await Promise.all(sec.feeds.map(f=>feed(f).then(l=>({f,l}))));
+              const seen=new Set(),pick=[];
+              const take=lists=>{for(let i=0;i<40&&pick.length<sec.n;i++)for(const l of lists){const x=l[i];if(!x||pick.length>=sec.n||(x.t&&x.t<fresh))continue;
+                const k=x.title.toLowerCase().replace(/[^a-zа-яё0-9]/gi,"").slice(0,50);if(seen.has(k))continue;seen.add(k);pick.push(x)}};
+              take(res.filter(x=>!x.f.fb).map(x=>x.l));
+              if(pick.length<sec.n)take(res.filter(x=>x.f.fb).map(x=>x.l));
+              console.log("Раздел новостей "+(NEWS.indexOf(sec)+1)+": ответило источников "+res.filter(x=>x.l.length).length+" из "+res.length+", новостей "+pick.length);
+              if(pick.length)parts.push("<b>"+esc(sec.title)+"</b>\n"+pick.map(x=>"• <a href=\""+esc(x.link)+"\">"+esc(x.title)+"</a> <i>— "+esc(x.src)+"</i>").join("\n"));
+            }
+            if(!parts.length)return;
+            let text=parts.join("\n\n");if(text.length>4000)text=text.slice(0,text.lastIndexOf("\n•",4000));
+            const r=await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:TG_CHAT,text,parse_mode:"HTML",disable_web_page_preview:true})});
+            console.log("Новости:",r.ok?"отправлены":"не отправились ("+r.status+")");
+          }
           // утренняя сводка: раз в день после DIGEST_TIME, закрепляется в чате (видна в виджете Telegram)
           const DIG=String(process.env.DIGEST_TIME||"08:00").trim();
           if(/^\d{1,2}:\d{2}$/.test(DIG)){
@@ -152,6 +209,7 @@ jobs:
                 try{await post("unpinAllChatMessages",{});if(j.result&&j.result.message_id)await post("pinChatMessage",{message_id:j.result.message_id,disable_notification:true})}catch(e){}
               }
               console.log("Утренняя сводка:",r.ok?"отправлена":"не отправилась ("+r.status+")");
+              try{await sendNews()}catch(e){console.log("Новости: ошибка",e.message)}
             }
           }
           for(const k of Object.keys(sent))if(sent[k]<now-14*864e5){delete sent[k];changed=true}
