@@ -741,7 +741,7 @@ function repLabel(t){
   let l={daily:"каждый день",weekdays:"по будням",weekly:"каждую неделю: "+ds(),biweekly:"раз в 2 недели: "+ds(),monthly:"каждый месяц, "+s.getDate()+" числа",yearly:"каждый год, "+s.getDate()+" "+MONTHS[s.getMonth()]}[rp.freq]||"";
   if(rp.until)l+=", до "+fmtDate(fromIso(rp.until));return l;
 }
-const sortT=(a,b)=>(a.date+(a.time||"99")).localeCompare(b.date+(b.time||"99"));
+const sortT=(a,b)=>(!!a.done-!!b.done)||(a.date+(a.time||"99")).localeCompare(b.date+(b.time||"99"));
 
 function exTasks(){
   const t=today(),d0=iso(t),d1=iso(addDays(t,1)),d2=iso(addDays(t,2)),d4=iso(addDays(t,4)),d6=iso(addDays(t,6));
@@ -939,7 +939,7 @@ function renderAgenda(){
   $("#agDate").textContent=`${rel}${d.getDate()} ${MONTHS[d.getMonth()]}`;
   const all=byFilter(tasksAll());
   const list=onDate(all,sel).sort(sortT);
-  const byDue=(a,b)=>(a.due+(a.dueTime||"99")).localeCompare(b.due+(b.dueTime||"99"));
+  const byDue=(a,b)=>(!!a.done-!!b.done)||(a.due+(a.dueTime||"99")).localeCompare(b.due+(b.dueTime||"99"));
   const dueList=all.filter(t=>hasDue(t)&&t.due===sel&&t.date!==sel).sort(byDue);
   const prog=all.filter(t=>hasDue(t)&&!t.done&&t.date<sel&&t.due>sel&&sel>=td).sort(byDue);
   const late=sel===td?all.filter(t=>hasDue(t)&&!t.done&&t.due<td).sort(byDue):[];
@@ -1261,7 +1261,7 @@ function localParse(text,hint){
   const parts=text.replace(/\s+/g," ").split(R(String.raw`(?:[;!\n]|\.(?!\d))+|,\s*(?=(?:а\s+)?(?:потом|затем|ещё|еще|также)\b)|\s+(?:а потом|потом|затем|и ещё|и еще)\s+|(?=\b(?:ещё |еще |новая )?(?:идея|заметк)\b)`)).map(s=>s.trim()).filter(s=>s.length>2);
   const out=[];
   let sticky="";
-  for(const p of parts){for(const s of p.split(R(String.raw`,\s*(?=(?:в|во|на|завтра|послезавтра|сегодня|каждый|каждую|каждое|каждые|ежедневно|дедлайн)\s)`))){const ex=explicitCat(s);if(ex)sticky=ex;const r=parseOne(s,hint,sticky);if(r){if(r.kind==="note"&&CHECK_RE.test(s))toChecklist(r);out.push(r)}}}
+  for(const p of parts){for(const s of p.split(R(String.raw`,\s*(?=(?:в|во|на|завтра|послезавтра|сегодня|каждый|каждую|каждое|каждые|ежедневно|дедлайн)\s)`))){const ex=explicitCat(s);if(ex)sticky=ex;const r=parseOne(s,hint,sticky);if(r){if(r.kind==="note"&&CHECK_RE.test(s))toChecklist(r);out.push(r)}else{const lt=out[out.length-1];if(lt&&lt.kind==="task"&&!lt.due&&!lt.repeat&&R(String.raw`\b(?:дедлайн|срок)`).test(s)){const dd=findDue(" "+s+" ");if(dd)lt.due=iso(dd.date)}}}}
   return out;
 }
 const WD_RE=[["понедельник",1],["вторник",2],["сред",3],["четверг",4],["пятниц",5],["суббот",6],["воскресень",0]];
