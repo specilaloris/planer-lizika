@@ -130,19 +130,18 @@ jobs:
           // утренняя газета: статьи из RSS (полный текст из ленты или со страницы), погода в Петербурге, цитата дня
           // переменная NEWS = off выключает газету; названия статей в журнал не пишутся
           const NEWS=[
-            {title:"Хорошие новости",n:4,feeds:[
-              {name:"Google Новости",google:true,url:"https://news.google.com/rss/search?q="+encodeURIComponent("\"добрые новости\" OR \"хорошие новости\" when:2d")+"&hl=ru&gl=RU&ceid=RU:ru"},
-              {name:"Google Новости",google:true,url:"https://news.google.com/rss/search?q="+encodeURIComponent("волонтеры спасли OR впервые открыли OR вылечили when:1d")+"&hl=ru&gl=RU&ceid=RU:ru"},
+            {title:"Хорошие новости",n:4,days:3,feeds:[
+              {name:"Позитивные новости",url:"https://positivnews.ru/feed/"},
+              {name:"Google Новости",google:true,fb:true,url:"https://news.google.com/rss/search?q="+encodeURIComponent("волонтеры спасли OR впервые открыли OR вылечили when:1d")+"&hl=ru&gl=RU&ceid=RU:ru"},
               {name:"Good News Network",fb:true,url:"https://www.goodnewsnetwork.org/feed/"},
               {name:"Positive News",fb:true,url:"https://www.positive.news/feed/"}]},
-            {title:"Мода",n:5,feeds:[
-              {name:"ELLE",url:"https://www.elle.ru/rss/"},
-              {name:"The Symbol",url:"https://www.thesymbol.ru/rss/"},
+            {title:"Мода",n:5,days:2,feeds:[
               {name:"Grazia",google:true,url:"https://news.google.com/rss/search?q="+encodeURIComponent("site:graziamagazine.ru when:3d")+"&hl=ru&gl=RU&ceid=RU:ru"},
+              {name:"Лента.ру · Ценности",url:"https://lenta.ru/rss/articles/style"},
               {name:"ELLE",google:true,url:"https://news.google.com/rss/search?q="+encodeURIComponent("site:elle.ru when:2d")+"&hl=ru&gl=RU&ceid=RU:ru"},
-              {name:"Buro 24/7",google:true,url:"https://news.google.com/rss/search?q="+encodeURIComponent("site:buro247.ru when:2d")+"&hl=ru&gl=RU&ceid=RU:ru"},
-              {name:"Google Новости",google:true,fb:true,url:"https://news.google.com/rss/search?q="+encodeURIComponent("мода тренды when:1d")+"&hl=ru&gl=RU&ceid=RU:ru"},
-              {name:"Grazia UK",google:true,fb:true,url:"https://news.google.com/rss/search?q="+encodeURIComponent("site:graziadaily.co.uk when:2d")+"&hl=en-GB&gl=GB&ceid=GB:en-GB"}]}];
+              {name:"The Symbol",google:true,url:"https://news.google.com/rss/search?q="+encodeURIComponent("site:thesymbol.ru when:2d")+"&hl=ru&gl=RU&ceid=RU:ru"},
+              {name:"Лента.ру · Ценности",fb:true,url:"https://lenta.ru/rss/news/style"},
+              {name:"Google Новости",google:true,fb:true,url:"https://news.google.com/rss/search?q="+encodeURIComponent("мода тренды when:1d")+"&hl=ru&gl=RU&ceid=RU:ru"}]}];
           const PAPER={title:"Утренняя газета Лизика",over:"Хорошие новости и мода",file:"gazeta-lizika",
             fonts:"Cormorant+Garamond:ital,wght@0,600;0,700;1,500&family=PT+Serif:wght@400;700",display:"'Cormorant Garamond',Georgia,serif",body:"'PT Serif',Georgia,serif",
             colors:{bg:"#F2E9DC",paper:"#FBF7F0",fg:"#30150E",muted:"#76604F",accent:"#5C1621",on:"#F8E9DC",line:"#DDCDB8",soft:"#F3E8DA"}};
@@ -209,12 +208,27 @@ jobs:
           }
           // текст со страницы статьи: абзацы внутри <article> (или всей страницы), картинка из og:image
           async function fromPage(it){
-            if(it.google)return;
+            if(it.google){const u=await gnResolve(it.link);if(!u)return;it.link=u;it.google=false}
             const html=(await getUrl(it.link,10000)).replace(/<(script|style|noscript|svg|form|nav|footer|header|aside)[\s\S]*?<\/\1>/gi,"");if(!html)return;
             const scope=(html.match(/<article[\s\S]*?<\/article>/i)||html.match(/<div[^>]+(?:itemprop=["']articleBody|class=["'][^"']*(?:article|post|entry|content)[^"']*)["'][\s\S]*$/i)||[html])[0];
             const ps=[...scope.matchAll(/<(p|h2|h3|li)[\s>][\s\S]*?<\/\1>/gi)].map(m=>one(m[0])).filter(x=>x.length>40&&!/cookie|подпиш|подписат|реклам|©|все права|telegram-канал|наш канал/i.test(x));
             if(ps.join(" ").length>it.paras.join(" ").length)it.paras=ps;
             if(!it.img){const m=html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)/i)||html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image/i);if(m)it.img=m[1].replace(/&amp;/g,"&")}
+          }
+          async function gnResolve(link){
+            try{
+              const id=(link.match(/\/articles\/([^?/#]+)/)||[])[1];if(!id)return "";
+              const pg=await getUrl("https://news.google.com/rss/articles/"+id+"?hl=ru&gl=RU&ceid=RU:ru",10000);
+              const sg=(pg.match(/data-n-a-sg="([^"]+)"/)||[])[1],ts=(pg.match(/data-n-a-ts="([^"]+)"/)||[])[1];if(!sg||!ts)return "";
+              const inner=JSON.stringify(["garturlreq",[["X","X",["X","X"],null,null,1,1,"US:en",null,1,null,null,null,null,null,0,1],"X","X",1,[1,1,1],1,1,null,0,0,null,0],id,+ts,sg]);
+              const ac=new AbortController(),tm=setTimeout(()=>ac.abort(),10000);
+              const r=await fetch("https://news.google.com/_/DotsSplashUi/data/batchexecute",{method:"POST",signal:ac.signal,
+                headers:{...UA,"Content-Type":"application/x-www-form-urlencoded;charset=UTF-8"},body:"f.req="+encodeURIComponent(JSON.stringify([[["Fbv4je",inner,null,"generic"]]]))});
+              clearTimeout(tm);if(!r.ok)return "";
+              const txt=await r.text(),line=txt.split("\n").find(l=>l.startsWith("[[")&&l.includes("garturlres"));if(!line)return "";
+              const row=JSON.parse(line).find(x=>x[0]==="wrb.fr");const u=JSON.parse(row[2])[1];
+              return /^https?:/.test(u)&&!/news\.google\./.test(u)?u:"";
+            }catch(e){return ""}
           }
           async function weather(){
             try{
@@ -230,15 +244,16 @@ jobs:
           }
           async function sendPaper(){
             if(String(process.env.NEWS||"").trim().toLowerCase()==="off")return;
-            const fresh=Date.now()-36*3600e3,secs=[];
+            const secs=[];
             for(const sec of NEWS){
+              const fresh=Date.now()-(sec.days||1.5)*864e5;
               const res=await Promise.all(sec.feeds.map(f=>feed(f).then(l=>({f,l}))));
               const seen=new Set(),pick=[];
               const take=lists=>{for(let i=0;i<40&&pick.length<sec.n;i++)for(const l of lists){const x=l[i];if(!x||pick.length>=sec.n||(x.t&&x.t<fresh))continue;
                 const k=x.title.toLowerCase().replace(/[^a-zа-яё0-9]/gi,"").slice(0,50);if(seen.has(k))continue;seen.add(k);pick.push(x)}};
               take(res.filter(x=>!x.f.fb).map(x=>x.l));
               if(pick.length<sec.n)take(res.filter(x=>x.f.fb).map(x=>x.l));
-              for(let i=0;i<pick.length;i+=4)await Promise.all(pick.slice(i,i+4).map(it=>it.paras.join(" ").length<700?fromPage(it):null));
+              for(let i=0;i<pick.length;i+=4)await Promise.all(pick.slice(i,i+4).map(it=>it.google||it.paras.join(" ").length<700?fromPage(it):null));
               pick.forEach(it=>{let n=0;it.paras=it.paras.filter(p=>(n+=p.length)<=14000)});
               console.log("Раздел газеты "+(NEWS.indexOf(sec)+1)+": ответило источников "+res.filter(x=>x.l.length).length+" из "+res.length+", статей "+pick.length+", с полным текстом "+pick.filter(x=>x.paras.join(" ").length>=700).length);
               if(pick.length)secs.push({title:sec.title,items:pick});
