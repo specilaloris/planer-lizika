@@ -198,6 +198,7 @@ jobs:
           function clean(ps){
             const out=[];
             for(let x of ps){
+              x=x.replace(/\[([^\]]+)\]\((?:https?:)?\/\/[^)]*\)/g,"$1").replace(/\s*\[(?:https?:\/\/|www\.)[^\]]*\]/gi,"").replace(/\s*\((?:https?:\/\/|www\.)[^)\s]*\)/gi,"").replace(/\s*<https?:[^>\s]*>/gi,"").replace(/\[([^\]]+)\]\((?:https?:)?\/\/[^)]*\)/g,"$1").replace(/(^|\s)https?:\/\/\S+(?=\s|$)/g,"$1").replace(/\s{2,}/g," ").replace(/\s+([,.;:!?])/g,"$1");
               x=x.replace(/^время на прочтение:?\s*\d+\s*минут\S*\s*/i,"").replace(/\s+([,.;:!?)])/g,"$1").trim();
               if(!x)continue;if(STOP.test(x))break;
               if(JUNK.test(x)||DROPL.test(x)||x.length<3)continue;
