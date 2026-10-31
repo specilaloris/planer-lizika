@@ -142,7 +142,7 @@ jobs:
               {name:"The Symbol",google:true,url:"https://news.google.com/rss/search?q="+encodeURIComponent("site:thesymbol.ru when:2d")+"&hl=ru&gl=RU&ceid=RU:ru"},
               {name:"Лента.ру · Ценности",fb:true,url:"https://lenta.ru/rss/news/style"},
               {name:"Google Новости",google:true,fb:true,url:"https://news.google.com/rss/search?q="+encodeURIComponent("мода тренды when:1d")+"&hl=ru&gl=RU&ceid=RU:ru"}]}];
-          const PAPER={title:"Утренняя газета Лизика",over:"Хорошие новости и мода",file:"gazeta-lizika",
+          const PAPER={title:"Утренняя газета Лизика",over:"Хорошие новости, мода и афиша",file:"gazeta-lizika",afisha:true,
             fonts:"Cormorant+Garamond:ital,wght@0,600;0,700;1,500&family=PT+Serif:wght@400;700",display:"'Cormorant Garamond',Georgia,serif",body:"'PT Serif',Georgia,serif",
             colors:{bg:"#F2E9DC",paper:"#FBF7F0",fg:"#30150E",muted:"#76604F",accent:"#5C1621",on:"#F8E9DC",line:"#DDCDB8",soft:"#F3E8DA"}};
           const QUOTES=[
@@ -242,6 +242,56 @@ jobs:
                 min:T(d.temperature_2m_min[0]),max:T(d.temperature_2m_max[0]),rain:d.precipitation_probability_max[0],sunrise:d.sunrise[0].slice(11),sunset:d.sunset[0].slice(11),parts};
             }catch(e){return null}
           }
+          // афиша Петербурга: KudaGo (основной), kuda-spb.ru (запасной, разметка schema.org Event)
+          async function afisha(){
+            if(!PAPER.afisha)return [];
+            const nowS=Math.floor(Date.now()/1000),until=nowS+3*86400,out=[];
+            const MS=["января","февраля","марта","апреля","мая","июня","июля","августа","сентября","октября","ноября","декабря"];
+            const dd=t=>{const d=new Date(t*1000);return d.getDate()+" "+MS[d.getMonth()]};
+            const hm=t=>{const d=new Date(t*1000);return String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0")};
+            const cap=x=>x?x[0].toUpperCase()+x.slice(1):x;
+            const short=t=>{t=one(t||"");if(t.length<=260)return t;const c=t.slice(0,260);return c.slice(0,Math.max(c.lastIndexOf(". ")+1,200))+"…"};
+            const CATN={exhibition:"Выставка",theater:"Театр",concert:"Концерт",festival:"Фестиваль",party:"Вечеринка",kids:"Детям",education:"Лекция",tour:"Экскурсия",cinema:"Кино",other:"Событие"};
+            try{
+              const u="https://kudago.com/public-api/v1.4/events/?lang=ru&location=spb&page_size=60&text_format=text&expand=place&order_by=-favorites_count"+
+                "&categories=exhibition,theater,concert,festival&actual_since="+nowS+"&actual_until="+until+
+                "&fields=id,title,short_title,dates,place,site_url,images,description,price,is_free,categories";
+              const j=JSON.parse(await getUrl(u,15000)||"null");
+              for(const e of (j&&j.results)||[]){
+                const iv=(e.dates||[]).filter(d=>d.end>=nowS&&d.start<=until).sort((a,b)=>a.start-b.start)[0];if(!iv)continue;
+                const cat=(e.categories||[]).find(c=>CATN[c])||"other";
+                const long=iv.end-iv.start>2*86400;
+                const when=long?(iv.end>until+300*86400?"постоянно":"до "+dd(iv.end)):(iv.start<nowS?"сейчас":dd(iv.start)+(hm(iv.start)!=="00:00"?", "+hm(iv.start):""));
+                out.push({cat,catName:CATN[cat],title:cap(one(e.title)),when,where:e.place?[one(e.place.title),one(e.place.address)].filter(Boolean).join(", "):"",
+                  price:e.is_free?"бесплатно":one(e.price||""),desc:short(e.description),img:e.images&&e.images[0]&&e.images[0].image||"",link:e.site_url||""});
+              }
+            }catch(e){}
+            if(out.length<4){
+              for(const path of ["event/vystavki/","event/all/today/","event/all/tomorrow/"]){
+                const html=await getUrl("https://kuda-spb.ru/"+path,12000);
+                for(const m of html.matchAll(/<script[^>]+application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi)){
+                  let data;try{data=JSON.parse(m[1])}catch(e){continue}
+                  const list=[].concat(data).flatMap(x=>x&&x["@graph"]?x["@graph"]:[x]).flatMap(x=>x&&x.itemListElement?x.itemListElement.map(i=>i.item||i):[x]);
+                  for(const e of list){
+                    if(!e||!/Event/.test([].concat(e["@type"]||"").join(" "))||!e.name)continue;
+                    const st=Date.parse(e.startDate||"")/1000,en=Date.parse(e.endDate||e.startDate||"")/1000;if(en&&en<nowS)continue;
+                    const loc=[].concat(e.location||{})[0]||{},adr=typeof loc.address==="string"?loc.address:(loc.address&&loc.address.streetAddress)||"";
+                    const off=[].concat(e.offers||{})[0]||{};
+                    out.push({cat:"other",catName:/выстав/i.test(e.name+path)?"Выставка":"Событие",title:cap(one(e.name)),
+                      when:en&&st&&en-st>2*86400?"до "+dd(en):(st?dd(st):""),where:[one(loc.name||""),one(adr)].filter(Boolean).join(", "),
+                      price:off.price==0||off.price==="0"?"бесплатно":(off.price?"от "+off.price+" ₽":""),desc:short(e.description),img:[].concat(e.image||"")[0]||"",link:e.url||""});
+                  }
+                }
+                if(out.length>=12)break;
+              }
+            }
+            // по 3 выставки, 2 спектакля, 2 концерта, 1 фестиваль; остальное добираем по популярности
+            const seen=new Set(),pick=[],uniq=out.filter(x=>x.title&&/^https?:/.test(x.link)&&!seen.has(x.title.toLowerCase())&&seen.add(x.title.toLowerCase()));
+            for(const [c,n] of [["exhibition",3],["theater",2],["concert",2],["festival",1]])pick.push(...uniq.filter(x=>x.cat===c).slice(0,n));
+            for(const x of uniq){if(pick.length>=8)break;if(!pick.includes(x))pick.push(x)}
+            console.log("Афиша: найдено событий "+uniq.length+", в газете "+pick.length);
+            return pick.slice(0,8);
+          }
           async function sendPaper(){
             if(String(process.env.NEWS||"").trim().toLowerCase()==="off")return;
             const secs=[];
@@ -259,18 +309,22 @@ jobs:
               if(pick.length)secs.push({title:sec.title,items:pick});
             }
             const wx=await weather();
+            const afi=await afisha();
             const nd=new Date(),mo=nd.getMonth()+1,doy=Math.floor((nd-new Date(nd.getFullYear(),0,0))/864e5);
             const qs=QUOTES.filter(x=>!x.m||x.m.includes(mo)),quote=qs[doy%qs.length];
             const DOWN=["воскресенье","понедельник","вторник","среда","четверг","пятница","суббота"];
             const dateLine=nd.getDate()+" "+MON[nd.getMonth()]+" "+nd.getFullYear()+", "+DOWN[nd.getDay()];
-            if(!secs.length&&!wx)return;
+            if(!secs.length&&!wx&&!afi.length)return;
             const P=PAPER,C=P.colors;let no=0;
             const art=it=>{no++;const long=it.paras.join(" ").length>=700;
               return `<article id="a${no}"><div class="kick">${escH(it.src)}</div><h3>${escH(it.title)}</h3>`+
                 (it.img&&/^https?:/.test(it.img)?`<img src="${escH(it.img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">`:"")+
                 (it.paras.length?it.paras.map((p,i)=>`<p${i===0?' class="lead"':""}>${escH(p)}</p>`).join(""):`<p class="lead">Полный текст доступен на сайте издания.</p>`)+
                 `<a class="orig" href="${escH(it.link)}">${long?"Оригинал статьи":"Читать на сайте"} — ${escH(it.src)} →</a></article>`};
-            const tocHtml=secs.map(s=>`<div class="tsec"><div class="th">${escH(s.title)}</div><ol>${s.items.map(it=>`<li><a href="#a${++no}">${escH(it.title)}</a></li>`).join("")}</ol></div>`).join("");no=0;
+            const afiCard=e=>`<article class="ev">${e.img&&/^https?:/.test(e.img)?`<img src="${escH(e.img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">`:""}<div class="kick">${escH(e.catName)}</div><h3>${escH(e.title)}</h3>`+
+              `<div class="evm">${[e.when,e.where,e.price].filter(Boolean).map(escH).join(" · ")}</div>${e.desc?`<p>${escH(e.desc)}</p>`:""}<a class="orig" href="${escH(e.link)}">Подробнее и билеты →</a></article>`;
+            const afiHtml=afi.length?`<h2 class="sec" id="afisha">Афиша Петербурга</h2><div class="evs">${afi.map(afiCard).join("")}</div>`:"";
+            const tocHtml=secs.map(s=>`<div class="tsec"><div class="th">${escH(s.title)}</div><ol>${s.items.map(it=>`<li><a href="#a${++no}">${escH(it.title)}</a></li>`).join("")}</ol></div>`).join("")+(afi.length?`<div class="tsec"><div class="th"><a href="#afisha">Афиша Петербурга</a></div></div>`:"");no=0;
             const wxHtml=wx?`<section class="wx"><div class="wx-h">Погода · Санкт-Петербург</div><div class="wx-now"><span class="wx-i">${wx.icon}</span><span class="wx-t">${wx.now}</span><span class="wx-d">${escH(wx.desc)}<br><small>ощущается как ${wx.feels} · ветер ${wx.wind} м/с</small></span></div>`+
               `<div class="wx-p">${wx.parts.map(p=>`<div><small>${p.n}</small><b>${p.t}</b><span>${p.w[1]}</span></div>`).join("")}</div>`+
               `<div class="wx-f">днём от ${wx.min} до ${wx.max} · осадки ${wx.rain??0}% · восход ${wx.sunrise}, закат ${wx.sunset}</div></section>`:"";
@@ -302,13 +356,16 @@ jobs:
           article img{width:100%;max-height:360px;object-fit:cover;border-radius:4px;margin:4px 0 10px;background:var(--soft)}
           article p{margin:0 0 .7em}article p.lead{font-size:1.07em}
           .orig{display:inline-block;margin-top:4px;color:var(--accent);font-weight:600;text-decoration:none;font-size:15px}
+          .evs{display:grid;grid-template-columns:1fr 1fr;gap:0 18px}@media (max-width:560px){.evs{grid-template-columns:1fr}}
+          .ev h3{font-size:20px}.ev img{max-height:200px}.evm{font-size:14px;color:var(--muted);margin:-4px 0 8px}.toc .th a{color:inherit;text-decoration:none}
           .foot{text-align:center;font-size:12px;color:var(--muted);margin-top:24px;border-top:3px double var(--fg);padding-top:10px}
           </style></head><body><div class="wrap">
-          <header class="mast"><div class="over">${escH(P.over)}</div><h1>${escH(P.title)}</h1><div class="date"><span>${escH(dateLine)}</span><span>${secs.reduce((a,s)=>a+s.items.length,0)} материалов</span></div></header>
+          <header class="mast"><div class="over">${escH(P.over)}</div><h1>${escH(P.title)}</h1><div class="date"><span>${escH(dateLine)}</span><span>${secs.reduce((a,s)=>a+s.items.length,0)} материалов${afi.length?" · афиша":""}</span></div></header>
           <div class="top">${wxHtml}${qHtml}</div>
-          ${secs.length?`<nav class="toc"><div class="th">В номере</div>${tocHtml}</nav>`:""}
+          ${secs.length||afi.length?`<nav class="toc"><div class="th">В номере</div>${tocHtml}</nav>`:""}
           ${secs.map(s=>`<h2 class="sec">${escH(s.title)}</h2>`+s.items.map(art).join("")).join("")}
-          <div class="foot">${escH(P.title)} собирается автоматически из открытых лент изданий. Права на тексты принадлежат издательствам, ссылки на оригиналы — под каждой статьёй.</div>
+          ${afiHtml}
+          <div class="foot">${escH(P.title)} собирается автоматически из открытых лент изданий${PAPER.afisha?" и афиши KudaGo":""}. Права на тексты принадлежат издательствам, ссылки на оригиналы — под каждой статьёй.</div>
           </div></body></html>`;
             const cap=["🗞 "+P.title+" · "+nd.getDate()+" "+MON[nd.getMonth()],wx?wx.icon+" Петербург: "+wx.now+", "+wx.desc+" (днём до "+wx.max+")":"",quote?"«"+quote.q+"»":""].filter(Boolean).join("\n");
             const fd=new FormData();
