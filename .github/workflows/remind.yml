@@ -29,7 +29,7 @@ concurrency:
 jobs:
   remind:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 8
     env:
       TZ: Europe/Moscow
       DATA_REPO: ${{ vars.DATA_REPO || format('{0}/planer-lizika-data', github.repository_owner) }}
@@ -286,6 +286,8 @@ jobs:
             const hm=t=>{const d=new Date(t*1000);return String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0")};
             const cap=x=>x?x[0].toUpperCase()+x.slice(1):x;
             const short=t=>{t=one(t||"");if(t.length<=260)return t;const c=t.slice(0,260);return c.slice(0,Math.max(c.lastIndexOf(". ")+1,200))+"…"};
+            const ok=()=>out.filter(x=>x.title&&/^https?:/.test(x.link));
+            const abs=(u,base)=>{try{return u?new URL(u,base).href:""}catch(e){return ""}};
             const CATN={exhibition:"Выставка",theater:"Театр",concert:"Концерт",festival:"Фестиваль",party:"Вечеринка",kids:"Детям",education:"Лекция",tour:"Экскурсия",cinema:"Кино",other:"Событие"};
             try{
               const u="https://kudago.com/public-api/v1.4/events/?lang=ru&location=spb&page_size=60&text_format=text&expand=place&order_by=-favorites_count"+
@@ -294,17 +296,18 @@ jobs:
               let txt=await getUrl(u,15000),src="KudaGo";
               if(!/^\s*\{/.test(txt)){const r=await viaReader(u,"text");const a=r.indexOf("{"),b=r.lastIndexOf("}");txt=a>=0?r.slice(a,b+1):"";src="KudaGo через читалку"}
               let j=null;try{j=JSON.parse(txt||"null")}catch(e){}
-              console.log("Афиша: "+src+(j&&j.results?" ответил, событий "+j.results.length:" не ответил"));
+              console.log("Афиша: "+src+(j&&j.results?" ответил, событий в ответе "+j.results.length:" не ответил"));
               for(const e of (j&&j.results)||[]){
                 const iv=(e.dates||[]).filter(d=>d.end>=nowS&&d.start<=until).sort((a,b)=>a.start-b.start)[0];if(!iv)continue;
                 const cat=(e.categories||[]).find(c=>CATN[c])||"other";
                 const long=iv.end-iv.start>2*86400;
                 const when=long?(iv.end>until+300*86400?"постоянно":"до "+dd(iv.end)):(iv.start<nowS?"сейчас":dd(iv.start)+(hm(iv.start)!=="00:00"?", "+hm(iv.start):""));
                 out.push({cat,catName:CATN[cat],title:cap(one(e.title)),when,where:e.place?[one(e.place.title),one(e.place.address)].filter(Boolean).join(", "):"",
-                  price:e.is_free?"бесплатно":one(e.price||""),desc:short(e.description),img:e.images&&e.images[0]&&e.images[0].image||"",link:e.site_url||""});
+                  price:e.is_free?"бесплатно":one(e.price||""),desc:short(e.description),img:e.images&&e.images[0]&&e.images[0].image||"",link:e.site_url||(e.id?"https://kudago.com/spb/event/"+e.id+"/":"")});
               }
-            }catch(e){}
-            if(out.length<4){
+            }catch(e){console.log("Афиша: ошибка разбора KudaGo",e.message)}
+            console.log("Афиша: после KudaGo годных событий "+ok().length);
+            if(ok().length<4){
               for(const path of ["event/vystavki/","event/all/today/","event/all/tomorrow/"]){
                 let html=await getUrl("https://kuda-spb.ru/"+path,12000);
                 if(!/ld\+json/.test(html))html=await viaReader("https://kuda-spb.ru/"+path,"html");
@@ -318,19 +321,20 @@ jobs:
                     const off=[].concat(e.offers||{})[0]||{};
                     out.push({cat:"other",catName:/выстав/i.test(e.name+path)?"Выставка":"Событие",title:cap(one(e.name)),
                       when:en&&st&&en-st>2*86400?"до "+dd(en):(st?dd(st):""),where:[one(loc.name||""),one(adr)].filter(Boolean).join(", "),
-                      price:off.price==0||off.price==="0"?"бесплатно":(off.price?"от "+off.price+" ₽":""),desc:short(e.description),img:[].concat(e.image||"")[0]||"",link:e.url||""});
+                      price:off.price==0||off.price==="0"?"бесплатно":(off.price?"от "+off.price+" ₽":""),desc:short(e.description),img:abs([].concat(e.image||"")[0]||"","https://kuda-spb.ru/"),link:abs(e.url||"","https://kuda-spb.ru/")||"https://kuda-spb.ru/"+path});
                   }
                 }
-                if(out.length>=12)break;
+                if(ok().length>=12)break;
               }
+              console.log("Афиша: после kuda-spb.ru годных событий "+ok().length);
             }
-            if(out.length<4){
+            if(ok().length<4){
               for(const q of ["выставка Петербург открылась when:4d","Петербург спектакль OR концерт OR фестиваль премьера when:3d"]){
                 const l=await feed({name:"Google Новости",google:true,url:"https://news.google.com/rss/search?q="+encodeURIComponent(q)+"&hl=ru&gl=RU&ceid=RU:ru"});
                 for(const x of l.slice(0,5)){const u=await gnResolve(x.link);out.push({cat:"other",catName:/выстав/i.test(x.title)?"Выставка":"Культура",title:x.title,when:"",where:x.src,price:"",desc:"",img:"",link:u||x.link})}
-                if(out.length>=8)break;
+                if(ok().length>=8)break;
               }
-              console.log("Афиша: добрано из новостей о культуре, всего "+out.length);
+              console.log("Афиша: после новостей о культуре годных событий "+ok().length);
             }
             // по 3 выставки, 2 спектакля, 2 концерта, 1 фестиваль; остальное добираем по популярности
             const seen=new Set(),pick=[],uniq=out.filter(x=>x.title&&/^https?:/.test(x.link)&&!seen.has(x.title.toLowerCase())&&seen.add(x.title.toLowerCase()));
