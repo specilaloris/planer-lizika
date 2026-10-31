@@ -191,8 +191,24 @@ jobs:
             const ac=new AbortController(),tm=setTimeout(()=>ac.abort(),ms);
             try{const r=await fetch(url,{signal:ac.signal,headers:UA,redirect:"follow"});if(!r.ok)return "";return await r.text()}catch(e){return ""}finally{clearTimeout(tm)}
           }
-          const toParas=t=>dec(t).split(/\n+/).map(x=>x.replace(/\s+/g," ").trim()).filter(x=>x.length>1&&!/^(читать далее|читать дальше|подробнее|read more|the post .* appeared first)/i.test(x));
-          const firstImg=h=>{const m=String(h||"").match(/<img[^>]+src=["']([^"']+)["']/i);return m?m[1]:""};
+          // чистка текста: скрипты и рекламный код, служебные хвосты («Использованные источники», «The post … appeared first», «Уважаемый читатель»), голые ссылки
+          const STOP=/^(использованные источники|источники:|уважаемый читатель|the post .{0,200} appeared first|больше (хороших|забавных|позитивных|интересных)?\s*новост|читайте также|смотрите также|по теме:|подписывайтесь|подпишитесь|отправить новость|поделиться|теги:|related:|also read)/i;
+          const JUNK=/yaContextCb|Ya\.Context|renderTo|blockId|adsbygoogle|googletag|window\.|document\.|=>|^\s*[{}()\];,]+\s*$|^\}\)|^function\b|^var |^const |^let /;
+          const DROPL=/^(источник|фото( обложки)?|фото|иллюстрация|реклама|erid|advertisement)\s*[:.]|^(https?:\/\/|www\.)\S+$|^\S+\.(ru|com|org|net)(\/\S*)?$|^(читать далее|читать дальше|подробнее|read more)\b/i;
+          function clean(ps){
+            const out=[];
+            for(let x of ps){
+              x=x.replace(/^время на прочтение:?\s*\d+\s*минут\S*\s*/i,"").replace(/\s+([,.;:!?)])/g,"$1").trim();
+              if(!x)continue;if(STOP.test(x))break;
+              if(JUNK.test(x)||DROPL.test(x)||x.length<3)continue;
+              if(/^[A-Z][A-Z\s’'-]{5,}[:…]/.test(x))continue; // английские промо-строки капслоком
+              out.push(x);
+            }
+            return out;
+          }
+          const toParas=t=>clean(dec(String(t||"").replace(/<(script|style|noscript)[\s\S]*?<\/\1>/gi,"")).split(/\n+/).map(x=>x.replace(/\s+/g," ").trim()));
+          const goodImg=u=>u&&/^https?:/.test(u)&&!/s\.w\.org\/images\/core\/emoji|\/emoji\/|gravatar|pixel|counter|1x1/i.test(u);
+          const firstImg=h=>{for(const m of String(h||"").matchAll(/<img[^>]+src=["']([^"']+)["']/gi))if(goodImg(m[1]))return m[1];return ""};
           async function feed(f){
             const xml=await getUrl(f.url);if(!xml)return [];
             const blocks=xml.match(/<item[\s>][\s\S]*?<\/item>/gi)||xml.match(/<entry[\s>][\s\S]*?<\/entry>/gi)||[];
@@ -203,17 +219,21 @@ jobs:
               const raw=(tag(b,"content:encoded")||tag(b,"content")||tag(b,"description")||tag(b,"summary")).replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g,"$1").replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&quot;/g,'"').replace(/&amp;/g,"&");
               const enc=(b.match(/<(?:enclosure|media:content|media:thumbnail)[^>]+url="([^"]+)"/i)||[])[1];
               const ds=one(tag(b,"pubDate")||tag(b,"published")||tag(b,"updated")||tag(b,"dc:date"));
-              return {title:title.length>200?title.slice(0,197)+"…":title,link,src,google:!!f.google,paras:f.google?[]:toParas(raw),img:(enc||firstImg(raw)||"").replace(/&amp;/g,"&"),t:ds?(Date.parse(ds)||0):0};
+              return {title:title.length>200?title.slice(0,197)+"…":title,link,src,google:!!f.google,paras:f.google?[]:toParas(raw),img:(goodImg(enc)?enc:firstImg(raw)||"").replace(/&amp;/g,"&"),t:ds?(Date.parse(ds)||0):0};
             }).filter(x=>x.title&&/^https?:/.test(x.link)).sort((a,b)=>b.t-a.t);
           }
           // текст со страницы статьи: абзацы внутри <article> (или всей страницы), картинка из og:image
           async function fromPage(it){
             if(it.google){const u=await gnResolve(it.link);if(!u)return;it.link=u;it.google=false}
-            const html=(await getUrl(it.link,10000)).replace(/<(script|style|noscript|svg|form|nav|footer|header|aside)[\s\S]*?<\/\1>/gi,"");if(!html)return;
+            const raw=await getUrl(it.link,10000);if(!raw)return;
+            let ld="";for(const m of raw.matchAll(/<script[^>]+application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi)){try{const walk=o=>{if(!o||typeof o!=="object")return;if(typeof o.articleBody==="string"&&o.articleBody.length>ld.length)ld=o.articleBody;Object.values(o).forEach(walk)};walk(JSON.parse(m[1]))}catch(e){}}
+            const html=raw.replace(/<(script|style|noscript|svg|form|nav|footer|header|aside)[\s\S]*?<\/\1>/gi,"");
             const scope=(html.match(/<article[\s\S]*?<\/article>/i)||html.match(/<div[^>]+(?:itemprop=["']articleBody|class=["'][^"']*(?:article|post|entry|content)[^"']*)["'][\s\S]*$/i)||[html])[0];
             const ps=[...scope.matchAll(/<(p|h2|h3|li)[\s>][\s\S]*?<\/\1>/gi)].map(m=>one(m[0])).filter(x=>x.length>40&&!/cookie|подпиш|подписат|реклам|©|все права|telegram-канал|наш канал/i.test(x));
-            if(ps.join(" ").length>it.paras.join(" ").length)it.paras=ps;
-            if(!it.img){const m=html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)/i)||html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image/i);if(m)it.img=m[1].replace(/&amp;/g,"&")}
+            const fromLd=ld?clean(dec(ld).split(/\n+|(?<=[.!?…»])\s{2,}/).map(x=>x.trim())):[];
+            for(const cand of [fromLd,clean(ps)])if(cand.join(" ").length>it.paras.join(" ").length)it.paras=cand;
+            if(!it.paras.length){const m=raw.match(/<meta[^>]+(?:property=["']og:description|name=["']description)["'][^>]+content=["']([^"']{40,})/i);if(m)it.paras=[one(m[1])]}
+            if(!it.img){const m=html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)/i)||html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image/i);if(m&&goodImg(m[1]))it.img=m[1].replace(/&amp;/g,"&")}
           }
           async function gnResolve(link){
             try{
@@ -316,11 +336,14 @@ jobs:
             const dateLine=nd.getDate()+" "+MON[nd.getMonth()]+" "+nd.getFullYear()+", "+DOWN[nd.getDay()];
             if(!secs.length&&!wx&&!afi.length)return;
             const P=PAPER,C=P.colors;let no=0;
-            const art=it=>{no++;const long=it.paras.join(" ").length>=700;
-              return `<article id="a${no}"><div class="kick">${escH(it.src)}</div><h3>${escH(it.title)}</h3>`+
-                (it.img&&/^https?:/.test(it.img)?`<img src="${escH(it.img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">`:"")+
-                (it.paras.length?it.paras.map((p,i)=>`<p${i===0?' class="lead"':""}>${escH(p)}</p>`).join(""):`<p class="lead">Полный текст доступен на сайте издания.</p>`)+
-                `<a class="orig" href="${escH(it.link)}">${long?"Оригинал статьи":"Читать на сайте"} — ${escH(it.src)} →</a></article>`};
+            const art=it=>{no++;const ps=it.paras,all=ps.join(" "),long=all.length>=700;
+              let cut=0,len=0;while(cut<ps.length&&(cut<1||len<200)){len+=ps[cut].length;cut++}
+              if(ps.length-cut<=1)cut=ps.length;
+              const P=(p,i)=>`<p${i===0?' class="lead"':""}>${escH(p)}</p>`,mins=Math.max(1,Math.round(all.split(/\s+/).length/180));
+              return `<article id="a${no}"><div class="kick">${escH(it.src)}${long?` · ${mins} мин`:""}</div><h3>${escH(it.title)}</h3>`+
+                (goodImg(it.img)?`<img src="${escH(it.img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">`:"")+
+                (ps.length?ps.slice(0,cut).map(P).join("")+(cut<ps.length?`<details class="more"><summary>Читать полностью</summary>${ps.slice(cut).map((p,i)=>P(p,i+cut)).join("")}</details>`:""):`<p class="lead muted">Текст этой статьи доступен только на сайте издания.</p>`)+
+                `<a class="orig" href="${escH(it.link)}">${long?"Оригинал":"Читать на сайте"} — ${escH(it.src)} →</a></article>`};
             const afiCard=e=>`<article class="ev">${e.img&&/^https?:/.test(e.img)?`<img src="${escH(e.img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">`:""}<div class="kick">${escH(e.catName)}</div><h3>${escH(e.title)}</h3>`+
               `<div class="evm">${[e.when,e.where,e.price].filter(Boolean).map(escH).join(" · ")}</div>${e.desc?`<p>${escH(e.desc)}</p>`:""}<a class="orig" href="${escH(e.link)}">Подробнее и билеты →</a></article>`;
             const afiHtml=afi.length?`<h2 class="sec" id="afisha">Афиша Петербурга</h2><div class="evs">${afi.map(afiCard).join("")}</div>`:"";
@@ -355,6 +378,8 @@ jobs:
           article h3{font-family:${P.display};font-size:24px;line-height:1.2;margin:4px 0 10px}
           article img{width:100%;max-height:360px;object-fit:cover;border-radius:4px;margin:4px 0 10px;background:var(--soft)}
           article p{margin:0 0 .7em}article p.lead{font-size:1.07em}
+          .more summary{cursor:pointer;color:var(--accent);font-weight:700;font-size:15px;list-style:none;margin:2px 0 8px}.more summary::-webkit-details-marker{display:none}
+          .more summary::after{content:" ↓"}.more[open] summary{display:none}.muted{color:var(--muted)}
           .orig{display:inline-block;margin-top:4px;color:var(--accent);font-weight:600;text-decoration:none;font-size:15px}
           .evs{display:grid;grid-template-columns:1fr 1fr;gap:0 18px}@media (max-width:560px){.evs{grid-template-columns:1fr}}
           .ev h3{font-size:20px}.ev img{max-height:200px}.evm{font-size:14px;color:var(--muted);margin:-4px 0 8px}.toc .th a{color:inherit;text-decoration:none}
