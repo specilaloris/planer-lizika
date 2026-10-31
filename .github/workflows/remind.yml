@@ -193,7 +193,7 @@ jobs:
           }
           // чистка текста: скрипты и рекламный код, служебные хвосты («Использованные источники», «The post … appeared first», «Уважаемый читатель»), голые ссылки
           const STOP=/^(использованные источники|источники:|уважаемый читатель|the post .{0,200} appeared first|больше (хороших|забавных|позитивных|интересных)?\s*новост|читайте также|смотрите также|по теме:|подписывайтесь|подпишитесь|отправить новость|поделиться|теги:|related:|also read)/i;
-          const JUNK=/yaContextCb|Ya\.Context|renderTo|blockId|adsbygoogle|googletag|window\.|document\.|=>|^\s*[{}()\];,]+\s*$|^\}\)|^function\b|^var |^const |^let /;
+          const JUNK=/subtitles (settings|off)|Color Opacity|Caption Area|opens .{0,30} dialog|^(Play|Pause|Mute|Unmute|Fullscreen|Current Time|Duration|Loaded)\b|yaContextCb|Ya\.Context|renderTo|blockId|adsbygoogle|googletag|window\.|document\.|=>|^\s*[{}()\];,]+\s*$|^\}\)|^function\b|^var |^const |^let /;
           const DROPL=/^(источник|фото( обложки)?|фото|иллюстрация|реклама|erid|advertisement)\s*[:.]|^(https?:\/\/|www\.)\S+$|^\S+\.(ru|com|org|net)(\/\S*)?$|^(читать далее|читать дальше|подробнее|read more)\b/i;
           function clean(ps){
             const out=[];
@@ -243,7 +243,8 @@ jobs:
               if(!it.img){const m=md.match(/!\[[^\]]*\]\((https?:[^)\s]+)/);if(m&&goodImg(m[1]))it.img=m[1]}return}
             let ld="";for(const m of raw.matchAll(/<script[^>]+application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi)){try{const walk=o=>{if(!o||typeof o!=="object")return;if(typeof o.articleBody==="string"&&o.articleBody.length>ld.length)ld=o.articleBody;Object.values(o).forEach(walk)};walk(JSON.parse(m[1]))}catch(e){}}
             const html=raw.replace(/<(script|style|noscript|svg|form|nav|footer|header|aside)[\s\S]*?<\/\1>/gi,"");
-            const scope=(html.match(/<article[\s\S]*?<\/article>/i)||html.match(/<div[^>]+(?:itemprop=["']articleBody|class=["'][^"']*(?:article|post|entry|content)[^"']*)["'][\s\S]*$/i)||[html])[0];
+            const arts=(html.match(/<article[\s\S]*?<\/article>/gi)||[]).sort((a,b)=>one(b).length-one(a).length);
+            const scope=arts.length&&one(arts[0]).length>600?arts[0]:((html.match(/<div[^>]+(?:itemprop=["']articleBody|class=["'][^"']*(?:article|post|entry|content)[^"']*)["'][\s\S]*$/i)||[])[0]||arts[0]||html);
             const ps=[...scope.matchAll(/<(p|h2|h3|li)[\s>][\s\S]*?<\/\1>/gi)].map(m=>one(m[0])).filter(x=>x.length>40&&!/cookie|подпиш|подписат|реклам|©|все права|telegram-канал|наш канал/i.test(x));
             const fromLd=ld?clean(dec(ld).split(/\n+|(?<=[.!?…»])\s{2,}/).map(x=>x.trim())):[];
             for(const cand of [fromLd,clean(ps)])if(cand.join(" ").length>it.paras.join(" ").length)it.paras=cand;
@@ -330,9 +331,9 @@ jobs:
               console.log("Афиша: после kuda-spb.ru годных событий "+ok().length);
             }
             if(ok().length<4){
-              for(const q of ["выставка Петербург открылась when:4d","Петербург спектакль OR концерт OR фестиваль премьера when:3d"]){
+              for(const q of ["куда пойти в Петербурге выходные OR \"культурные события Петербурга\" when:5d","выставка Петербург открылась when:5d","Петербург спектакль OR концерт OR фестиваль премьера when:4d"]){
                 const l=await feed({name:"Google Новости",google:true,url:"https://news.google.com/rss/search?q="+encodeURIComponent(q)+"&hl=ru&gl=RU&ceid=RU:ru"});
-                for(const x of l.slice(0,5)){const u=await gnResolve(x.link);out.push({cat:"other",catName:/выстав/i.test(x.title)?"Выставка":"Культура",title:x.title,when:"",where:x.src,price:"",desc:"",img:"",link:u||x.link})}
+                for(const x of l.slice(0,5)){const u=await gnResolve(x.link);out.push({cat:"other",catName:/выстав/i.test(x.title)?"Выставка":"Культура",title:x.title,when:"",where:x.src,price:"",desc:"",img:"",news:1,link:u||x.link})}
                 if(ok().length>=8)break;
               }
               console.log("Афиша: после новостей о культуре годных событий "+ok().length);
@@ -352,10 +353,15 @@ jobs:
               const res=await Promise.all(sec.feeds.map(f=>feed(f).then(l=>({f,l}))));
               const seen=new Set(),pick=[];
               const take=lists=>{for(let i=0;i<40&&pick.length<sec.n;i++)for(const l of lists){const x=l[i];if(!x||pick.length>=sec.n||(x.t&&x.t<fresh))continue;
+                if(/horoscope|astrolog|гороскоп|астролог|таро\b|tarot|ретроградн/i.test(x.title))continue;
                 const k=x.title.toLowerCase().replace(/[^a-zа-яё0-9]/gi,"").slice(0,50);if(seen.has(k))continue;seen.add(k);pick.push(x)}};
               take(res.filter(x=>!x.f.fb).map(x=>x.l));
               if(pick.length<sec.n)take(res.filter(x=>x.f.fb).map(x=>x.l));
               for(let i=0;i<pick.length;i+=4)await Promise.all(pick.slice(i,i+4).map(it=>it.google||it.paras.join(" ").length<700?fromPage(it):null));
+              // одинаковые абзацы в разных статьях одного сайта — это обвязка страницы (плеер, «читайте также»), убираем
+              const cnt={};pick.forEach(it=>new Set(it.paras).forEach(p=>cnt[p]=(cnt[p]||0)+1));
+              for(const it of pick){const before=it.paras.length;it.paras=it.paras.filter(p=>cnt[p]<2);
+                if(before&&it.paras.join(" ").length<400&&!it.via){const ps2=mdParas(await viaReader(it.link)).filter(p=>!cnt[p]||cnt[p]<2);if(ps2.join(" ").length>it.paras.join(" ").length){it.paras=ps2;it.via=1}}}
               pick.forEach(it=>{let n=0;it.paras=it.paras.filter(p=>(n+=p.length)<=14000)});
               for(const it of pick)if(isEn(it.title)){const t=await tr(it.title);let sum="",n=0;for(const p of it.paras){if(n>450)break;sum+=(sum?"\n":"")+p;n+=p.length}
                 const s2=await tr(sum);if(t||s2)it.ru={title:t,sum:s2.split(/\n+/).filter(Boolean)}}
@@ -386,7 +392,7 @@ jobs:
                 (it.paras.length?`<details class="more"><summary>Оригинал на английском · ${mins} мин</summary>${it.paras.map(p=>`<p>${escH(p)}</p>`).join("")}</details>`:"")+
                 `<a class="orig" href="${escH(it.link)}">Оригинал — ${escH(it.src)} →</a></article>`};
             const afiCard=e=>`<article class="ev">${e.img&&/^https?:/.test(e.img)?`<img src="${escH(e.img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">`:""}<div class="kick">${escH(e.catName)}</div><h3>${escH(e.title)}</h3>`+
-              `<div class="evm">${[e.when,e.where,e.price].filter(Boolean).map(escH).join(" · ")}</div>${e.desc?`<p>${escH(e.desc)}</p>`:""}<a class="orig" href="${escH(e.link)}">Подробнее и билеты →</a></article>`;
+              `<div class="evm">${[e.when,e.where,e.price].filter(Boolean).map(escH).join(" · ")}</div>${e.desc?`<p>${escH(e.desc)}</p>`:""}<a class="orig" href="${escH(e.link)}">${e.news?"Читать заметку →":"Подробнее и билеты →"}</a></article>`;
             const afiHtml=afi.length?`<h2 class="sec" id="afisha">Афиша Петербурга</h2><div class="evs">${afi.map(afiCard).join("")}</div>`:"";
             const tocHtml=secs.map(s=>`<div class="tsec"><div class="th">${escH(s.title)}</div><ol>${s.items.map(it=>`<li><a href="#a${++no}">${escH(it.ru&&it.ru.title||it.title)}</a></li>`).join("")}</ol></div>`).join("")+(afi.length?`<div class="tsec"><div class="th"><a href="#afisha">Афиша Петербурга</a></div></div>`:"");no=0;
             const wxHtml=wx?`<section class="wx"><div class="wx-h">Погода · Санкт-Петербург</div><div class="wx-now"><span class="wx-i">${wx.icon}</span><span class="wx-t">${wx.now}</span><span class="wx-d">${escH(wx.desc)}<br><small>ощущается как ${wx.feels} · ветер ${wx.wind} м/с</small></span></div>`+
@@ -432,7 +438,7 @@ jobs:
           ${secs.length||afi.length?`<nav class="toc"><div class="th">В номере</div>${tocHtml}</nav>`:""}
           ${secs.map(s=>`<h2 class="sec">${escH(s.title)}</h2>`+s.items.map(art).join("")).join("")}
           ${afiHtml}
-          <div class="foot">${escH(P.title)} собирается автоматически из открытых лент изданий${PAPER.afisha?" и афиши KudaGo":""}. Права на тексты принадлежат издательствам, ссылки на оригиналы — под каждой статьёй.</div>
+          <div class="foot">${escH(P.title)} собирается автоматически из открытых лент изданий${PAPER.afisha?" и афиши KudaGo":""}. Права на тексты принадлежат издательствам, ссылки на оригиналы — под каждой статьёй.<br><small>версия газеты: 31.10 · v5</small></div>
           </div></body></html>`;
             const cap=["🗞 "+P.title+" · "+nd.getDate()+" "+MON[nd.getMonth()],wx?wx.icon+" Петербург: "+wx.now+", "+wx.desc+" (днём до "+wx.max+")":"",quote?"«"+quote.q+"»":""].filter(Boolean).join("\n");
             const fd=new FormData();
